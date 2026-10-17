@@ -11,6 +11,7 @@
 module sqlite/core
 
 import std/int
+import std/float
 import std/text
 import std/uri::{URI, Params}
 import std/time::{Time}
