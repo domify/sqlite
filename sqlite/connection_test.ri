@@ -27,6 +27,14 @@ def it_sets_pragma_on_connection(pragma : String, value : String, expected : DBV
 end
 
 describe "Connection" do
+  it "opens in multi-thread mode, without a mutex on the connection" do
+    with_db do |db|
+      db.using_connection do |conn|
+        assert !conn.as(SQLite3Connection).mutexed?, "the connection has its own mutex (serialized mode)"
+      end.or_panic
+    end
+  end
+
   it "opens a database and then backs it up to another db" do
     with_db do |db|
       with_db("./test2.db") do |backup_db|

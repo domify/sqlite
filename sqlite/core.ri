@@ -183,6 +183,8 @@ lib LibSQLite3
 
   fun finalize = sqlite3_finalize(stmt : Statement) : Int32
   fun close = sqlite3_close(SQLite3) : Int32
+  # The connection's mutex: null in multi-thread mode.
+  fun db_mutex = sqlite3_db_mutex(SQLite3) : Void*
 
   fun create_function = sqlite3_create_function(SQLite3, funcName : UInt8*, nArg : Int32, eTextRep : Int32, pApp : Void*, xFunc : FuncCallback, xStep : Void*, xFinal : Void*) : Int32
   fun value_text = sqlite3_value_text(SQLite3Value) : UInt8*
@@ -627,7 +629,13 @@ pub class SQLite3Connection < Connection
   # of it fails.
   def self.open(options : Connection::Options, sqlite3_options : Options) : SQLite3Connection | DBError
     db = uninitialized LibSQLite3::SQLite3
-    flags = Flag::READWRITE | Flag::CREATE
+    # NOMUTEX: SQLite's multi-thread mode, no mutex on the connection, as
+    # rusqlite opens one. A connection is never in two threads at once: it
+    # is not `Share`, so no thread's block can capture it or a channel carry
+    # it (SPEC.md III.4.4), and the tasks of one thread take turns only
+    # where one parks (III.4.5). The serialized mode's lock and unlock on
+    # every call guarded against nothing.
+    flags = Flag::READWRITE | Flag::CREATE | Flag::NOMUTEX
     code = LibSQLite3.open_v2(to_c_string(sqlite3_options.filename), pointerof(db), flags.value, nil)
     conn = SQLite3Connection.new(options, db)
     set_up = code == Code::OKAY.value ? conn.set_up(sqlite3_options) : conn.last_error
@@ -746,6 +754,12 @@ pub class SQLite3Connection < Connection
 
   # SQLite's error for the last call on this connection that failed:
   # `sqlite3_errmsg` and `sqlite3_errcode`.
+  # Whether SQLite locks this connection on every call: false in the
+  # multi-thread mode `open` asks for.
+  def mutexed? : Bool
+    LibSQLite3.db_mutex(@db).address != 0_u64
+  end
+
   def last_error : SQLite3Error
     SQLite3Error.new(c_string(LibSQLite3.errmsg(@db)), LibSQLite3.errcode(@db))
   end
