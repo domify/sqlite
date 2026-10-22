@@ -315,9 +315,9 @@ pub class SQLite3ResultSet < ResultSet
     @column_index
   end
 
-  # The column's text or blob bytes copied from SQLite's buffer straight onto
-  # the tape, with no heap String between.
-  def read_tape : Tape::String | Nil | DBError
+  # A text or blob column copied from SQLite's buffer straight onto the tape,
+  # with no heap String between; any other column as `#read` answers it.
+  def read_tape : Tape::String | DBValue | DBError
     col = @column_index
     stmt = to_unsafe
     case Type.from_value?(LibSQLite3.column_type(stmt, col))
@@ -328,11 +328,8 @@ pub class SQLite3ResultSet < ResultSet
       writer.append(bytes, size) if size > 0
       @column_index += 1
       writer.finish
-    when Type::NULL
-      @column_index += 1
-      nil
     else
-      super
+      read
     end
   end
 
