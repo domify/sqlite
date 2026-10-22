@@ -1,0 +1,33 @@
+module sqlite/read_tape_test
+
+import db/db/db
+import db/db/errors::{DBError, ColumnTypeMismatchError}
+import db/db/spec::{describe, it}
+import sqlite/testing/spec_helper::*
+
+describe "SQLite3::ResultSet#read_tape" do
+  it "reads text, blob and NULL columns onto the tape" do
+    with_db do |db|
+      db.exec("CREATE TABLE t (name text, data blob, missing text, n integer)").or_panic
+      db.exec("INSERT INTO t VALUES (?, x'726177', NULL, 7)", "café").or_panic
+      db.exec("INSERT INTO t VALUES ('', x'', NULL, 8)").or_panic
+      seen = [] of String
+      db.query("SELECT name, data, missing, n FROM t ORDER BY n") do |rs|
+        rs.each do
+          tape do
+            name = rs.read_tape.or_panic
+            data = rs.read_tape.or_panic
+            missing = rs.read_tape.or_panic
+            assert missing.nil?
+            assert rs.read_tape.is_a?(ColumnTypeMismatchError)
+            if name.is_a?(Tape::String) && data.is_a?(Tape::String)
+              seen << "#{name.to_heap}|#{data.to_heap}"
+            end
+          end
+          nil
+        end.or_panic
+      end.or_panic
+      assert seen == ["café|raw", "|"]
+    end
+  end
+end
