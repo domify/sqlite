@@ -55,7 +55,7 @@ end
 
 # The number written in the *count* ASCII digits at *start*, or -1 when one
 # of them is not a digit.
-private def digits(bytes : Tape::String, start : Int32, count : Int32) : Int32
+private def digits(bytes : Str, start : Int32, count : Int32) : Int32
   value = 0
   count.times do |i|
     byte = bytes[start + i]

@@ -20,7 +20,7 @@ describe "SQLite3::ResultSet#read_tape" do
             missing = rs.read_tape.or_panic
             assert missing.nil?
             assert rs.read_tape.or_panic.is_a?(Int64)
-            if name.is_a?(Tape::String) && data.is_a?(Tape::String)
+            if name.is_a?(Str) && data.is_a?(Str)
               seen << "#{name.to_heap}|#{data.to_heap}"
             end
           end

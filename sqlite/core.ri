@@ -318,14 +318,14 @@ pub class SQLite3ResultSet < ResultSet
 
   # A text or blob column copied from SQLite's buffer straight onto the tape,
   # with no heap String between; any other column as `#read` answers it.
-  def read_tape : Tape::String | DBValue | DBError
+  def read_tape : Str | DBValue | DBError
     col = @column_index
     stmt = to_unsafe
     case Type.from_value?(LibSQLite3.column_type(stmt, col))
     when Type::TEXT, Type::BLOB
       bytes = LibSQLite3.column_blob(stmt, col)
       size = LibSQLite3.column_bytes(stmt, col)
-      writer = Tape::String::Writer.new(size)
+      writer = Str::Builder.new(size)
       writer.append(bytes, size) if size > 0
       @column_index += 1
       writer.finish
