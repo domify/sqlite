@@ -28,7 +28,7 @@ pub def parse_time(text : String) : Time | DBError
   invalid = DBError.new("Invalid SQLite3 time: #{text.inspect}, expected #{DATE_FORMAT_SUBSECOND.inspect} or #{DATE_FORMAT_SECOND.inspect}")
   size = text.bytesize
   return invalid if size < 19
-  bytes = text.to_unsafe
+  bytes = text.as_tape
   return invalid unless bytes[4] == '-'.ord.to_u8 && bytes[7] == '-'.ord.to_u8 && bytes[10] == ' '.ord.to_u8 &&
                         bytes[13] == ':'.ord.to_u8 && bytes[16] == ':'.ord.to_u8
 
@@ -55,7 +55,7 @@ end
 
 # The number written in the *count* ASCII digits at *start*, or -1 when one
 # of them is not a digit.
-private def digits(bytes : Pointer(UInt8), start : Int32, count : Int32) : Int32
+private def digits(bytes : Tape::String, start : Int32, count : Int32) : Int32
   value = 0
   count.times do |i|
     byte = bytes[start + i]

@@ -8,6 +8,7 @@
 #
 # The names carry a `SQLite3` prefix because this module imports iyi-db's
 # `Connection`, `Statement` and `ResultSet` by those names.
+@[Ffi]
 module sqlite/core
 
 import std/int
