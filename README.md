@@ -1,19 +1,20 @@
-# iyi-sqlite
+# sqlite
 
-An SQLite3 driver for [iyi](https://iyi.dev): a port of
+An SQLite3 driver for [ris](https://github.com/rislang/ris): a port of
 [crystal-sqlite3](https://github.com/crystal-lang/crystal-sqlite3) 0.24.0,
-written in iyi with no Crystal code and no Crystal standard library
-underneath. It is a driver for [iyi-db](https://github.com/iyilang/db), the
-common database interface, and binds the SQLite C library directly.
+written in ris with no Crystal code and no Crystal standard library
+underneath. It is a driver for [db](https://github.com/domify/db), the common
+database interface, and binds the SQLite C library directly.
 
 It keeps crystal-sqlite3's shape - `sqlite3:` URIs, `?` arguments, `Time` as
-text, PRAGMAs from the URI, `REGEXP`, `dump` - and changes what iyi's rules
-require: errors are values, types are closed, and tasks are structured.
+text, PRAGMAs from the URI, `REGEXP`, `dump` - and changes what ris's rules
+require: errors are values, types are closed, tasks are structured, and memory
+stays on the tape, so a connection lives in a block and text is read inside one.
 
 ## Requirements
 
-iyi 0.17.0 or later, iyi-db 0.1.1 (required by this package's `iyi.mod`), and
-the SQLite library (`libsqlite3`):
+ris 0.1.0 or later, db (required by this package's `ris.mod`), and the SQLite
+library (`libsqlite3`):
 
 * **Linux:** the development package, `apt install libsqlite3-dev`.
 * **macOS:** the system's.
@@ -29,7 +30,7 @@ the SQLite library (`libsqlite3`):
 Add it to a project under the short name `sqlite`:
 
 ```sh
-iyi get github.com/iyilang/sqlite --as sqlite
+ris get github.com/domify/sqlite --as sqlite
 ```
 
 Files then import its modules as `sqlite/sqlite/...`: the short name, then
@@ -38,7 +39,7 @@ the module's path in the package. Importing `sqlite/sqlite/sqlite` (or
 
 ## Usage
 
-```iyi
+```ris
 module app
 
 import db/db/db
@@ -57,7 +58,7 @@ def contacts : Nil | DBError
     db.exec("insert into contacts values (?, ?)", args: args)!
 
     puts "max age:"
-    puts db.scalar("select max(age) from contacts")! # => 33
+    puts db.scalar("select max(age) from contacts", as: Int64)! # => 33
 
     puts "contacts:"
     db.query("select name, age from contacts order by age desc") do |rs|
@@ -70,8 +71,8 @@ def contacts : Nil | DBError
       end!
     end!
 
-    contacts = db.query_all("SELECT name, age FROM contacts", as: NamedTuple(name: String, age: Int64))!
-    puts contacts # => [{name: "John Doe", age: 30}, {name: "Sarah", age: 33}]
+    ages = db.query_all("SELECT age FROM contacts ORDER BY age", as: Int64)!
+    puts ages # => [30, 33]
   end
 end
 
@@ -83,12 +84,20 @@ end
 
 The file is the URI's host and path: `sqlite3:./data.db`,
 `sqlite3:///abs/path.db`, and `sqlite3:%3Amemory%3A` for an in-memory
-database. The query takes iyi-db's pool options (`max_pool_size`, ...) and
-the PRAGMAs below. With `prepared_statements=false` every query answers a
-`DBError`: SQLite has no unprepared statements.
+database. The query takes the PRAGMAs below. With `prepared_statements=false`
+every query answers a `DBError`: SQLite has no unprepared statements.
+
+A connection belongs to the block and the task that opened it. There is no pool:
+a task that wants its own connection opens one, and `busy_timeout` makes them
+wait for each other's writes. Each call prepares its statement and finalizes it.
+
+Text is on the tape: read it inside the block, as `scalar(q) { |value| ... }` or
+`query(q) { |rs| ... }` do. `scalar(q, as: Int64)`, `query_one(q, as: T)` and
+`query_all(q, as: T)` are for flat values such as numbers and tuples of them; the
+compiler refuses them for text and `Time`.
 
 A failed SQLite call answers a `SQLite3Error` (module `sqlite/errors`), a
-`DBError` with SQLite's message and its result `code`.
+`DBError` with SQLite's message, cut off at 240 bytes, and its result `code`.
 
 ### Types
 
@@ -97,7 +106,7 @@ A failed SQLite call answers a `SQLite3Error` (module `sqlite/errors`), a
 | `INTEGER` | `Int64`; `read(Int8 \| Int16 \| Int32 \| UInt8 \| UInt16 \| UInt32)` (1) | every integer type but `UInt64` |
 | `FLOAT` | `Float64`; `read(Float32)` | `Float32`, `Float64` |
 | `TEXT` | `String`; `read(Time)` (2) | `String`, `Time` |
-| `BLOB` | `Bytes` | `Bytes` |
+| `BLOB` | `String` of its bytes | `Bytes` |
 | `INTEGER` 0/1 | `read(Bool)` | `Bool` |
 | `NULL` | `nil` | `nil` |
 
@@ -117,7 +126,7 @@ formats; text in neither answers a `DBError`.
 You can adjust certain [SQLite3 PRAGMAs](https://www.sqlite.org/pragma.html)
 automatically when the connection is created by using the query parameters:
 
-```iyi
+```ris
 Db::Db.open("sqlite3:./data.db?journal_mode=wal&synchronous=normal") do |db|
   # this database now uses WAL journal and normal synchronous mode
   # (defaults were `delete` and `full`, respectively)
@@ -149,7 +158,7 @@ in no error by the library.
 ### REGEXP
 
 Every connection registers the `regexp` function, so `text REGEXP pattern`
-works, with iyi's `Regex` (RE2 semantics: no backreferences or lookaround). A
+works, with ris's `Regex` (RE2 semantics: no backreferences or lookaround). A
 pattern `Regex` refuses answers an SQL error naming it, and a `NULL` operand
 answers `NULL`.
 
@@ -158,12 +167,9 @@ answers `NULL`.
 `SQLite3Connection#dump(to)` copies the whole database into another
 connection's, file to memory or the other way:
 
-```iyi
-db.using_connection do |source|
-  backup.using_connection do |target|
-    source.as(SQLite3Connection).dump(target.as(SQLite3Connection)) # import sqlite/sqlite/core::{SQLite3Connection}
-  end!
-end!
+```ris
+# import sqlite/sqlite/core::{SQLite3Connection}
+source.as(SQLite3Connection).dump(target.as(SQLite3Connection))!
 ```
 
 ## Modules
@@ -171,20 +177,22 @@ end!
 | module | what it holds |
 |---|---|
 | `sqlite/sqlite` | `VERSION`, `Any`; re-exports the three below |
-| `sqlite/core` | `SQLite3Driver`, `SQLite3Connection` (and its `Options`), `SQLite3Statement`, `SQLite3ResultSet`, `SQLite3ConnectionBuilder`, the `Flag`, `Type` and `Code` enums; registers the driver |
+| `sqlite/core` | `SQLite3Driver`, `SQLite3Connection` (and its `Options`), `SQLite3Statement`, `SQLite3ResultSet`, the `Flag`, `Type` and `Code` enums; registers the driver |
 | `sqlite/dates` | `DATE_FORMAT_SUBSECOND`, `DATE_FORMAT_SECOND`, `format_time`, `parse_time` |
 | `sqlite/errors` | `SQLite3Error` |
 
 ## What is different from crystal-sqlite3
 
-| crystal-sqlite3 | iyi-sqlite | why |
+| crystal-sqlite3 | this package | why |
 |---|---|---|
-| raises `SQLite3::Exception`, `DB::ConnectionRefused` | answers `SQLite3Error` and `ConnectionRefused` (with the `SQLite3Error` as its cause) as `DBError`s | errors are values (SPEC.md III.1) |
-| `SQLite3::Connection`, `SQLite3::Statement`, `SQLite3::ResultSet`, `SQLite3::Driver` | `SQLite3Connection`, `SQLite3Statement`, `SQLite3ResultSet`, `SQLite3Driver` in one module | the module imports iyi-db's `Connection`, ... by those names, and the four refer to one another (R-1) |
-| `Statement.new` and `Connection.new` prepare and open | `SQLite3Statement.prepare`, `SQLite3Connection.open` answer the error | a constructor has no error to answer |
+| raises `SQLite3::Exception`, `DB::ConnectionRefused` | answers `SQLite3Error` and `ConnectionRefused` (with SQLite's message) as `DBError`s | errors are values (SPEC.md III.1) |
+| `SQLite3::Connection`, `SQLite3::Statement`, `SQLite3::ResultSet`, `SQLite3::Driver` | `SQLite3Connection`, `SQLite3Statement`, `SQLite3ResultSet`, `SQLite3Driver` in one module | the module imports db's `Connection`, ... by those names, and the four refer to one another (R-1) |
+| `Statement.new` and `Connection.new` prepare and open | `SQLite3Statement#prepare`, `SQLite3Connection#open` answer the error | a constructor has no error to answer |
+| a pool of connections, a statement cache | one connection per block and task, a statement per call | a kept object cannot outlive the def that made it (SPEC 1.1, 5.1) |
+| `read(Bytes)` | a blob reads as a `String` of its bytes | a `Slice` cannot leave a def that did other work (SPEC 1.9) |
 | `LibSQLite3` | private to `sqlite/core` | a `lib` cannot be exported |
 | `Time#to_s(SQLite3::DATE_FORMAT_*)`, `Time.parse` | `format_time`, `parse_time` | `std/time` has no format strings |
-| `Time.local` values, converted to UTC | not there | iyi's `Time` is UTC only |
+| `Time.local` values, converted to UTC | not there | `Time` is written as UTC |
 | `to_u8` and friends raise `OverflowError` | `ColumnTypeMismatchError` | errors are values |
 | strings and blobs bound `SQLITE_STATIC`, kept alive by the statement | bound `SQLITE_TRANSIENT`: SQLite copies them | nothing has to outlive the call |
 | an empty `Bytes` argument bound as `NULL` (a null pointer) | bound as an empty blob | |
@@ -194,11 +202,11 @@ end!
 ## Development
 
 ```sh
-iyi test sqlite
+ris test sqlite
 ```
 
 The tests are crystal-sqlite3's specs, ported, beside the modules they test,
-and iyi-db's shared driver specs (`sqlite/driver_specs_test.iyi`). They write
+and db's shared driver specs (`sqlite/driver_specs_test.ri`). They write
 `./test.db` and `./test2.db` in the working directory and delete them.
 `examples/` holds crystal-sqlite3's sample, ported.
 

@@ -1,7 +1,7 @@
 # crystal-sqlite3's spec/driver_spec.cr.
 module sqlite/driver_test
 
-import std/uri::{URI}
+import std/uri::{ParsedURI, URI}
 import db/db/db
 import db/db/spec::{describe, it}
 import sqlite/core::{SQLite3Driver, SQLite3Connection}
@@ -36,9 +36,7 @@ describe "Driver" do
 
   it "should use database option as file to open" do
     with_db do |db|
-      conn = db.checkout.or_panic
-      assert conn.is_a?(SQLite3Connection)
-      conn.release
+      assert db.is_a?(SQLite3Connection)
       assert File.exists?(DB_FILENAME)
     end
   end

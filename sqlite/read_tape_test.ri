@@ -11,23 +11,21 @@ describe "SQLite3::ResultSet#read_tape" do
       db.exec("CREATE TABLE t (name text, data blob, missing text, n integer)").or_panic
       db.exec("INSERT INTO t VALUES (?, x'726177', NULL, 7)", "café").or_panic
       db.exec("INSERT INTO t VALUES ('', x'', NULL, 8)").or_panic
-      seen = [] of String
+      row = 0
       db.query("SELECT name, data, missing, n FROM t ORDER BY n") do |rs|
         rs.each do
-          tape do
-            name = rs.read_tape.or_panic
-            data = rs.read_tape.or_panic
-            missing = rs.read_tape.or_panic
-            assert missing.nil?
-            assert rs.read_tape.or_panic.is_a?(Int64)
-            if name.is_a?(Str) && data.is_a?(Str)
-              seen << "#{name.to_heap}|#{data.to_heap}"
-            end
-          end
+          name = rs.read_tape.or_panic
+          data = rs.read_tape.or_panic
+          missing = rs.read_tape.or_panic
+          assert missing.nil?
+          assert rs.read_tape.or_panic.is_a?(Int64)
+          assert name == (row == 0 ? "café" : "")
+          assert data == (row == 0 ? "raw" : "")
+          row += 1
           nil
         end.or_panic
       end.or_panic
-      assert seen == ["café|raw", "|"]
+      assert row == 2
     end
   end
 end

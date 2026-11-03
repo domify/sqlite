@@ -9,30 +9,30 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     env:
-      # The oldest iyi this release supports (README, Requirements).
-      IYI_VERSION: 0.17.0
+      # The oldest ris this release supports (README, Requirements).
+      RIS_VERSION: 0.1.0
     steps:
       - uses: actions/checkout@v4
 
       - name: Install SQLite
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
 
-      - name: Install iyi
+      - name: Install ris
         run: |
-          curl -fsSL https://raw.githubusercontent.com/iyilang/iyi/master/install.sh | IYI_PREFIX="$HOME/.iyi" sh
-          echo "$HOME/.iyi/bin" >> "$GITHUB_PATH"
+          curl -fsSL https://raw.githubusercontent.com/rislang/ris/main/install_ris.sh | RIS_PREFIX="$HOME/.ris" sh
+          echo "$HOME/.ris/bin" >> "$GITHUB_PATH"
 
-      - run: iyi version
+      - run: ris version
 
       - name: Test
-        run: iyi test sqlite
+        run: ris test sqlite
 
       - name: Build the examples
         run: |
-          for program in examples/*.iyi; do
+          for program in examples/*.ri; do
             echo "building $program"
-            iyi build "$program" -o "$RUNNER_TEMP/example"
+            ris build "$program" -o "$RUNNER_TEMP/example"
           done
 
       - name: Check formatting
-        run: iyi fmt --check sqlite examples
+        run: ris fmt --check sqlite examples

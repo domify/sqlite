@@ -18,7 +18,7 @@ def run : Nil | DBError
     db.exec("insert into contacts values (?, ?)", args: args)!
 
     puts "max age:"
-    puts db.scalar("select max(age) from contacts")! # => 33
+    puts db.scalar("select max(age) from contacts", as: Int64)! # => 33
 
     puts "contacts:"
     db.query("select name, age from contacts order by age desc") do |rs|

@@ -6,7 +6,7 @@
 module sqlite/dates
 
 import std/time::{Time}
-import db/db/errors::{DBError}
+import db/db/errors::{DBError, DBFailure}
 
 # `YYYY-MM-DD HH:MM:SS.mmm`, the format a `Time` argument is bound in.
 pub DATE_FORMAT_SUBSECOND = "%F %H:%M:%S.%L"
@@ -25,10 +25,10 @@ end
 # of fraction) or `DATE_FORMAT_SECOND`; a `DBError` naming the text when it
 # is neither, or not a date.
 pub def parse_time(text : String) : Time | DBError
-  invalid = DBError.new("Invalid SQLite3 time: #{text.inspect}, expected #{DATE_FORMAT_SUBSECOND.inspect} or #{DATE_FORMAT_SECOND.inspect}")
+  invalid = DBFailure.new("Invalid SQLite3 time: #{text.inspect}, expected #{DATE_FORMAT_SUBSECOND.inspect} or #{DATE_FORMAT_SECOND.inspect}")
   size = text.bytesize
   return invalid if size < 19
-  bytes = text.as_tape
+  bytes = text
   return invalid unless bytes[4] == '-'.ord.to_u8 && bytes[7] == '-'.ord.to_u8 && bytes[10] == ' '.ord.to_u8 &&
                         bytes[13] == ':'.ord.to_u8 && bytes[16] == ':'.ord.to_u8
 
@@ -55,7 +55,7 @@ end
 
 # The number written in the *count* ASCII digits at *start*, or -1 when one
 # of them is not a digit.
-private def digits(bytes : Str, start : Int32, count : Int32) : Int32
+private def digits(bytes : String, start : Int32, count : Int32) : Int32
   value = 0
   count.times do |i|
     byte = bytes[start + i]

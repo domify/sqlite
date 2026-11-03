@@ -2,6 +2,7 @@
 module sqlite/result_set_test
 
 import std/time::{Time}
+import std/slice::{Slice, Bytes}
 import std/regex::{Regex}
 import db/db/db
 import db/db/errors::{DBError}
@@ -68,13 +69,35 @@ describe "SQLite3::ResultSet" do
     end
   end
 
+  it "binds Bytes and reads a blob as its bytes" do
+    with_db do |db|
+      db.exec("CREATE TABLE blobs (data blob)").or_panic
+      db.exec("INSERT INTO blobs VALUES (?)", Bytes.new(3) { |i| (i + 97).to_u8 }).or_panic
+      db.scalar("SELECT data FROM blobs") { |value| assert value == "abc" }.or_panic
+      db.query_one("SELECT data FROM blobs") do |rs|
+        data = rs.read(String).or_panic
+        assert data.bytesize == 3
+        assert data.byte_at(0) == 97_u8 && data.byte_at(2) == 99_u8
+      end.or_panic
+    end
+  end
+
+  it "reads a blob's bytes as stored in a UTF-16 database" do
+    with_db do |db|
+      db.exec("PRAGMA encoding = 'UTF-16le'").or_panic
+      db.scalar("SELECT x'616263'") { |value| assert value == "abc" }.or_panic
+      db.query_one("SELECT x'616263'") { |rs| assert rs.read(String).or_panic == "abc" }.or_panic
+      db.scalar("SELECT 'abc'") { |value| assert value == "abc" }.or_panic
+    end
+  end
+
   # crystal-sqlite3 raised `Time::Format::Error` for text in neither format.
   it "answers an error for text that is not a time" do
     with_db do |db|
       ["2016-02-15", "2016-02-15T10:15:30", "2016-02-30 10:15:30", "2016-02-15 10:15:30.", "2016-02-15 10:15:30.1234567890"].each do |text|
-        expect_error(db.query_one("select ?", text, as: Time), DBError, "Invalid SQLite3 time", partial: true)
+        db.query_one("select ?", text) { |rs| expect_error(rs.read(Time), DBError, "Invalid SQLite3 time", partial: true); nil }.or_panic
       end
-      assert db.query_one("select '2016-02-15 10:15:30.5'", as: Time).or_panic == Time.utc(2016, 2, 15, 10, 15, 30, nanosecond: 500_000_000)
+      db.query_one("select '2016-02-15 10:15:30.5'") { |rs| assert rs.read(Time).or_panic == Time.utc(2016, 2, 15, 10, 15, 30, nanosecond: 500_000_000) }.or_panic
     end
   end
 
@@ -83,7 +106,7 @@ describe "SQLite3::ResultSet" do
     with_db do |db|
       expect_error(db.query_one("select 256", as: UInt8), DBError, "returned a Int64 (256) but a UInt8 was expected", partial: true)
       expect_error(db.query_one("select -1", as: UInt32 | Nil), DBError, "returned a Int64 (-1) but a UInt32 was expected", partial: true)
-      assert db.query_one("select 255", as: UInt8).or_panic == 255_u8
+      db.query_one("select 255") { |rs| assert rs.read(UInt8).or_panic == 255_u8 }.or_panic
     end
   end
 end

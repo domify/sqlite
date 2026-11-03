@@ -1,5 +1,21 @@
 # Unreleased
 
+Ported to ris's memory rules, on the redesigned db:
+
+* A connection belongs to the block and the task that opened it:
+  `Db::Db.open(uri) { |db| ... }`. There is no pool, and `max_pool_size` and the
+  other pool options do nothing. A task that wants its own connection opens one;
+  `busy_timeout` makes them wait for each other's writes.
+* There is no statement cache: each call prepares its statement and finalizes it.
+* `SQLite3Connection#open` and `SQLite3Statement#prepare` do the IO after the
+  object is built, in place of `SQLite3Connection.open` and
+  `SQLite3Statement.prepare`. `SQLite3ConnectionBuilder` is gone.
+* `SQLite3Error` is a flat struct with a message of at most 240 bytes.
+  `ConnectionRefused` carries SQLite's message but no longer a cause.
+* A `BLOB` column reads as a `String` of its bytes, also through `read(String)`
+  (`bytesize`, `byte_at`, `each_byte` read them). `read(Bytes)` is gone.
+* `REGEXP` compiles and matches in one task, so no `Regex` is copied across it.
+
 Reset cached exec statements on success and failure so failed COMMIT cannot retain table locks.
 
 SQLite3Connection#transaction_state reads sqlite3_get_autocommit: Idle or InTransaction. SQLite

@@ -4,7 +4,7 @@
 # after the example that opens it.
 module sqlite/testing/spec_helper
 
-import std/uri::{URI}
+import std/uri::{ParsedURI, URI}
 import db/db/db
 import db/db/core::{Database, Connection}
 import sqlite/core::{SQLite3Connection}

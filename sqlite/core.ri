@@ -14,14 +14,14 @@ module sqlite/core
 import std/int
 import std/float
 import std/text
-import std/uri::{URI, Params}
+import std/uri::{ParsedURI, URI, Params}
 import std/time::{Time}
 import std/slice::{Slice, Bytes}
 import std/regex::{Regex}
 import db/db/db
 import db/db/errors::*
-import db/db/value::{DBValue, ExecResult}
-import db/db/core::{Driver, ConnectionBuilder, ResultSet, Statement, Connection, TransactionState}
+import db/db/value::{DBValue, DBArrays, ExecResult}
+import db/db/core::{Driver, ResultSet, Statement, Connection, TransactionState}
 import sqlite/errors::{SQLite3Error}
 import sqlite/dates::{format_time, parse_time}
 
@@ -214,11 +214,11 @@ private def regexp(context : LibSQLite3::SQLite3Context, argv : LibSQLite3::SQLi
     return
   end
 
-  compiled = compile_regex(pattern)
-  if compiled.is_a?(Regex)
-    LibSQLite3.result_int(context, text.matches?(compiled) ? 1 : 0)
+  matched = regexp_matches(pattern, text)
+  if matched.is_a?(Bool)
+    LibSQLite3.result_int(context, matched ? 1 : 0)
   else
-    LibSQLite3.result_error(context, compiled.to_unsafe, compiled.bytesize)
+    LibSQLite3.result_error(context, matched.to_unsafe, matched.bytesize)
   end
 end
 
@@ -229,12 +229,12 @@ private def value_text(value : LibSQLite3::SQLite3Value) : String?
   string_from(pointer, LibSQLite3.value_bytes(value))
 end
 
-# *pattern* compiled, or the message it was refused with. `Regex.compile`
-# panics on a pattern it does not take, and a panic is caught only at a task
-# boundary, so the compile runs as a task.
-private def compile_regex(pattern : String) : Regex | String
+# Whether *text* matches *pattern*, or the message *pattern* was refused with.
+# `Regex.compile` panics on a pattern it does not take, and a panic is caught
+# only at a task boundary, so the compile and the match run as a task.
+private def regexp_matches(pattern : String, text : String) : Bool | String
   group do |g|
-    task = g.spawn { Regex.compile(pattern) }
+    task = g.spawn { text.matches?(Regex.compile(pattern)) }
     value = task.value
     value.is_a?(Panicked) ? value.message : value
   end
@@ -254,14 +254,6 @@ private def c_string(pointer : UInt8*) : String
   string_from(pointer, size)
 end
 
-# A NUL-terminated copy of *text*, for the C functions that take one.
-private def to_c_string(text : String) : UInt8*
-  copy = Pointer(UInt8).malloc((text.bytesize + 1).to_u64)
-  copy.copy_from(text.to_unsafe, text.bytesize)
-  copy[text.bytesize] = 0_u8
-  copy
-end
-
 pub class SQLite3ResultSet < ResultSet
   @column_index = 0
 
@@ -271,7 +263,7 @@ pub class SQLite3ResultSet < ResultSet
 
   protected def do_close : Nil | DBError
     LibSQLite3.reset(to_unsafe)
-    super
+    nil
   end
 
   # Advances to the next row. Returns `true` if there's a next row,
@@ -286,51 +278,84 @@ pub class SQLite3ResultSet < ResultSet
     sqlite3_statement.sqlite3_connection.last_error
   end
 
+  # The next column. A blob answers its bytes as a `String`: a `Slice` cannot
+  # leave a def that did other work (SPEC 1.9).
   def read : DBValue | DBError
     col = @column_index
     stmt = to_unsafe
-    value = case Type.from_value?(LibSQLite3.column_type(stmt, col))
-            when Type::INTEGER
-              LibSQLite3.column_int64(stmt, col)
-            when Type::FLOAT
-              LibSQLite3.column_double(stmt, col)
-            when Type::BLOB
-              blob = LibSQLite3.column_blob(stmt, col)
-              size = LibSQLite3.column_bytes(stmt, col)
-              bytes = Bytes.new(size)
-              bytes.to_unsafe.copy_from(blob, size) if size > 0
-              bytes
-            when Type::TEXT
-              text = LibSQLite3.column_text(stmt, col)
-              string_from(text, LibSQLite3.column_bytes(stmt, col))
-            when Type::NULL
-              nil
-            else
-              return sqlite3_statement.sqlite3_connection.last_error
-            end
+    kind = Type.from_value?(LibSQLite3.column_type(stmt, col))
+    return sqlite3_statement.sqlite3_connection.last_error if kind.nil?
     @column_index += 1
-    value
+    case kind
+    when Type::INTEGER then LibSQLite3.column_int64(stmt, col)
+    when Type::FLOAT   then LibSQLite3.column_double(stmt, col)
+    when Type::BLOB    then blob_at(stmt, col)
+    when Type::TEXT    then text_at(stmt, col)
+    else                    nil
+    end
+  end
+
+  private def text_at(stmt : LibSQLite3::Statement, col : Int32) : String
+    string_from(LibSQLite3.column_text(stmt, col), LibSQLite3.column_bytes(stmt, col))
+  end
+
+  # The bytes as stored: `column_text` would decode a blob in a UTF-16 database.
+  private def blob_at(stmt : LibSQLite3::Statement, col : Int32) : String
+    string_from(LibSQLite3.column_blob(stmt, col), LibSQLite3.column_bytes(stmt, col))
   end
 
   def next_column_index : Int32
     @column_index
   end
 
-  # A text or blob column copied from SQLite's buffer straight onto the tape,
-  # with no heap String between; any other column as `#read` answers it.
-  def read_tape : Str | DBValue | DBError
+  # A column as `#read` answers it: text and blobs copied from SQLite's buffer
+  # straight onto the tape, with no other String between.
+  def read_tape : String | DBValue | DBError
+    read
+  end
+
+  # The text of the next column; `ColumnTypeMismatchError` for any other type.
+  def read(t : String.class) : String | DBError
     col = @column_index
     stmt = to_unsafe
-    case Type.from_value?(LibSQLite3.column_type(stmt, col))
-    when Type::TEXT, Type::BLOB
-      bytes = LibSQLite3.column_blob(stmt, col)
-      size = LibSQLite3.column_bytes(stmt, col)
-      writer = Str::Builder.new(size)
-      writer.append(bytes, size) if size > 0
-      @column_index += 1
-      writer.finish
-    else
-      read
+    kind = Type.from_value?(LibSQLite3.column_type(stmt, col))
+    return mismatch(col, "String") unless kind == Type::TEXT || kind == Type::BLOB
+    @column_index += 1
+    kind == Type::BLOB ? blob_at(stmt, col) : text_at(stmt, col)
+  end
+
+  # `read(String)`, with `nil` for a `NULL` column.
+  def read(t : (String | Nil).class) : String | Nil | DBError
+    col = @column_index
+    stmt = to_unsafe
+    kind = Type.from_value?(LibSQLite3.column_type(stmt, col))
+    return mismatch(col, "String | Nil") unless kind == Type::TEXT || kind == Type::BLOB || kind == Type::NULL
+    @column_index += 1
+    return nil if kind == Type::NULL
+    kind == Type::BLOB ? blob_at(stmt, col) : text_at(stmt, col)
+  end
+
+  # Moves past a column of the wrong type, as a read that failed on it does.
+  private def mismatch(col : Int32, expected : String) : DBError
+    kind = Type.from_value?(LibSQLite3.column_type(to_unsafe, col))
+    @column_index += 1
+    ColumnTypeMismatchError.new(
+      context: "#{self.class}#read",
+      column_index: col,
+      column_name: column_name(col),
+      column_type: column_type_name(kind),
+      expected_type: expected
+    )
+  end
+
+  # The type `#read` answers for a column SQLite calls *kind*.
+  private def column_type_name(kind : Type?) : String
+    case kind
+    when Type::INTEGER then "Int64"
+    when Type::FLOAT   then "Float64"
+    when Type::BLOB    then "Bytes"
+    when Type::TEXT    then "String"
+    else                    "Nil"
     end
   end
 
@@ -473,37 +498,42 @@ pub class SQLite3ResultSet < ResultSet
 end
 
 pub class SQLite3Statement < Statement
-  @stmt : LibSQLite3::Statement
+  # No statement yet: `prepare` makes it.
+  @stmt = Pointer(Void).new(0_u64).as(LibSQLite3::Statement)
+  @prepared_statement : Bool
 
-  def initialize(connection : SQLite3Connection, command : String, @stmt : LibSQLite3::Statement)
+  def initialize(connection : SQLite3Connection, command : String, @prepared_statement : Bool)
     super(connection, command)
   end
 
-  # Compiles *command* on *connection*: the statement, or SQLite's error.
-  def self.prepare(connection : SQLite3Connection, command : String) : SQLite3Statement | DBError
+  def prepare : Nil | DBError
+    return DBFailure.new("SQLite3 driver does not support unprepared statements") unless @prepared_statement
+    # SQLite stops at a NUL, which would drop the SQL after it without a word.
+    return DBFailure.new("NUL byte in SQL statement") if command.includes?('\0')
     stmt = uninitialized LibSQLite3::Statement
     tail = uninitialized UInt8*
-    code = LibSQLite3.prepare_v2(connection.to_unsafe, command.to_unsafe, command.bytesize,
+    code = LibSQLite3.prepare_v2(sqlite3_connection.to_unsafe, "#{command}\0".to_unsafe, -1,
       pointerof(stmt), pointerof(tail))
-    return connection.last_error unless code == Code::OKAY.value
-    return DBError.new("Empty SQL statement") if stmt.address == 0_u64
-    consumed = (tail.address - command.to_unsafe.address).to_i32
-    if consumed < command.bytesize && !string_from(tail, command.bytesize - consumed).strip.empty?
+    return sqlite3_connection.last_error unless code == Code::OKAY.value
+    return DBFailure.new("Empty SQL statement") if stmt.address == 0_u64
+    unless c_string(tail).strip.empty?
       LibSQLite3.finalize(stmt)
-      return DBError.new("Trailing SQL after first statement")
+      return DBFailure.new("Trailing SQL after first statement")
     end
-    SQLite3Statement.new(connection, command, stmt)
+    @stmt = stmt
+    nil
   end
 
-  protected def perform_query(args : Array(DBValue)) : ResultSet | DBError
+  protected def perform_query(args : Array(DBValue), arrays : DBArrays) : Nil | DBError
     LibSQLite3.reset(@stmt)
-    bind_args(args)!
+    bind_args(args)
+  end
+
+  protected def new_result_set : ResultSet
     SQLite3ResultSet.new(self)
   end
 
-  protected def perform_exec(args : Array(DBValue)) : ExecResult | DBError
-    # A failed step can retain SQLite locks until reset, even after ROLLBACK.
-    # Cached statements must release them before this execution returns.
+  protected def perform_exec(args : Array(DBValue), arrays : DBArrays) : ExecResult | DBError
     defer LibSQLite3.reset(@stmt)
     LibSQLite3.reset(@stmt)
     bind_args(args)!
@@ -522,16 +552,15 @@ pub class SQLite3Statement < Statement
   end
 
   protected def do_close : Nil | DBError
-    closed = super
-    LibSQLite3.finalize(@stmt)
-    closed
+    LibSQLite3.finalize(@stmt) unless @stmt.address == 0_u64
+    nil
   end
 
   private def bind_args(args : Array(DBValue)) : Nil | DBError
     code = LibSQLite3.clear_bindings(@stmt)
     return sqlite3_connection.last_error unless code == Code::OKAY.value
     expected = LibSQLite3.bind_parameter_count(@stmt)
-    return DBError.new("Expected #{expected} bound arguments, got #{args.size}") unless args.size == expected
+    return DBFailure.new("Expected #{expected} bound arguments, got #{args.size}") unless args.size == expected
     args.each_with_index do |arg, index|
       bound = bind_arg(index + 1, arg)
       return bound if bound.is_a?(DBError)
@@ -567,7 +596,7 @@ pub class SQLite3Statement < Statement
              text = format_time(value)
              LibSQLite3.bind_text(@stmt, index, text.to_unsafe, text.bytesize, transient)
            else
-             return DBError.new("#{self.class} does not support #{value.class} params")
+             return DBFailure.new("#{self.class} does not support #{value.class} params")
            end
     return sqlite3_connection.last_error unless code == Code::OKAY.value
     nil
@@ -585,6 +614,7 @@ end
 pub class SQLite3Connection < Connection
   # The connection's own options, from the URI: the file and the PRAGMAs
   # set when it opens.
+  @[OnTape]
   pub struct Options
     getter filename : String
     # pragmas
@@ -601,7 +631,7 @@ pub class SQLite3Connection < Connection
     end
 
     # The options *uri* sets, *default*'s for the PRAGMAs it does not.
-    def self.from_uri(uri : URI, default : Options = Options.new) : Options
+    def self.from_uri(uri : URI | ParsedURI, default : Options = Options.new) : Options
       params = Params.parse(uri.query || "")
 
       Options.new(
@@ -637,41 +667,35 @@ pub class SQLite3Connection < Connection
     end
   end
 
-  @db : LibSQLite3::SQLite3
+  # No database yet: `open` opens it.
+  @db = Pointer(Void).new(0_u64).as(LibSQLite3::SQLite3)
 
-  def initialize(options : Connection::Options, @db : LibSQLite3::SQLite3)
+  def initialize(options : Connection::Options, @uri : URI | ParsedURI)
     super(options)
   end
 
-  # Opens the file *sqlite3_options* names, registers `REGEXP` and runs the
-  # PRAGMAs; `ConnectionRefused`, with SQLite's error as its cause, when any
-  # of it fails.
-  def self.open(options : Connection::Options, sqlite3_options : Options) : SQLite3Connection | DBError
+  # Opens the file the URI names and sets its PRAGMAs; `ConnectionRefused` with
+  # SQLite's message when it cannot.
+  def open : Nil | DBError
+    sqlite3_options = Options.from_uri(@uri)
     db = uninitialized LibSQLite3::SQLite3
-    # NOMUTEX: SQLite's multi-thread mode, no mutex on the connection, as
-    # rusqlite opens one. A connection is never in two threads at once: it
-    # is not `Share`, so no thread's block can capture it or a channel carry
-    # it (SPEC.md III.4.4), and the tasks of one thread take turns only
-    # where one parks (III.4.5). The serialized mode's lock and unlock on
-    # every call guarded against nothing.
     flags = Flag::READWRITE | Flag::CREATE | Flag::NOMUTEX
-    code = LibSQLite3.open_v2(to_c_string(sqlite3_options.filename), pointerof(db), flags.value, nil)
-    conn = SQLite3Connection.new(options, db)
-    set_up = code == Code::OKAY.value ? conn.set_up(sqlite3_options) : conn.last_error
+    code = LibSQLite3.open_v2("#{sqlite3_options.filename}\0".to_unsafe, pointerof(db), flags.value, nil)
+    @db = db
+    set_up = code == Code::OKAY.value ? set_up(sqlite3_options) : last_error
     if set_up.is_a?(DBError)
-      # A handle is allocated even when opening fails, and is released here.
       LibSQLite3.close(db)
-      return ConnectionRefused.new(set_up.message, set_up)
+      @db = Pointer(Void).new(0_u64).as(LibSQLite3::SQLite3)
+      return ConnectionRefused.new(set_up.message)
     end
-    conn
+    nil
   end
 
   protected def set_up(sqlite3_options : Options) : Nil | DBError
-    # 2 means 2 arguments
-    check(LibSQLite3.create_function(@db, to_c_string("regexp"), 2, SQLITE_UTF8, nil, REGEXP_FN, nil, nil))!
+    check(LibSQLite3.create_function(@db, "regexp\0".to_unsafe, 2, SQLITE_UTF8, nil, REGEXP_FN, nil, nil))!
 
     if pragma_statement = sqlite3_options.pragma_statement
-      check(LibSQLite3.exec(@db, to_c_string(pragma_statement), nil, nil, nil))!
+      check(LibSQLite3.exec(@db, "#{pragma_statement}\0".to_unsafe, nil, nil, nil))!
     end
     nil
   end
@@ -679,25 +703,14 @@ pub class SQLite3Connection < Connection
   # The file a `sqlite3:` *uri* names: its host and path, decoded, so
   # `sqlite3:%3Amemory%3A` is `:memory:` and `sqlite3://./file.db` is
   # `./file.db`.
-  def self.filename(uri : URI) : String
+  def self.filename(uri : URI | ParsedURI) : String
     URI.decode_www_form((uri.hostname || "") + uri.path)
   end
 
-  def build_prepared_statement(query : String) : Statement | DBError
-    SQLite3Statement.prepare(self, query)
+  def build_statement(query : String, prepared : Bool) : Statement
+    SQLite3Statement.new(self, query, prepared)
   end
 
-  def build_unprepared_statement(query : String) : Statement | DBError
-    # sqlite3 does not support unprepared statement.
-    # All statements once prepared should be released
-    # when unneeded. Unprepared statement are not aim
-    # to leave state in the connection. Mimicking them
-    # with prepared statement would be wrong with
-    # respect connection resources.
-    DBError.new("SQLite3 driver does not support unprepared statements")
-  end
-
-  # :inherit:
   def transaction_state : TransactionState
     LibSQLite3.get_autocommit(@db) != 0 ? TransactionState::Idle : TransactionState::InTransaction
   end
@@ -719,9 +732,8 @@ pub class SQLite3Connection < Connection
   end
 
   protected def do_close : Nil | DBError
-    closed = super
     return last_error unless LibSQLite3.close(@db) == Code::OKAY.value
-    closed
+    nil
   end
 
   def perform_begin_transaction : Nil | DBError
@@ -757,8 +769,7 @@ pub class SQLite3Connection < Connection
   # Dump the database to another SQLite3 database. This can be used for
   # backing up a SQLite3 Database to disk or the opposite.
   def dump(to : SQLite3Connection) : Nil | DBError
-    main = to_c_string("main")
-    backup_item = LibSQLite3.backup_init(to.to_unsafe, main, @db, main)
+    backup_item = LibSQLite3.backup_init(to.to_unsafe, "main\0".to_unsafe, @db, "main\0".to_unsafe)
     return to.last_error if backup_item.address == 0_u64
 
     code = LibSQLite3.backup_step(backup_item, -1)
@@ -793,19 +804,9 @@ pub class SQLite3Connection < Connection
   end
 end
 
-pub class SQLite3ConnectionBuilder < ConnectionBuilder
-  def initialize(@options : Connection::Options, @sqlite3_options : SQLite3Connection::Options)
-  end
-
-  def build : Connection | DBError
-    SQLite3Connection.open(@options, @sqlite3_options)
-  end
-end
-
 pub class SQLite3Driver < Driver
-  def connection_builder(uri : URI) : ConnectionBuilder | DBError
-    params = Params.parse(uri.query || "")
-    SQLite3ConnectionBuilder.new(connection_options(params)!, SQLite3Connection::Options.from_uri(uri))
+  def new_connection(uri : URI | ParsedURI, options : Connection::Options) : Connection
+    SQLite3Connection.new(options, uri)
   end
 end
 

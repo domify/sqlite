@@ -20,8 +20,9 @@ end
 def it_sets_pragma_on_connection(pragma : String, value : String, expected : DBValue) : Nil
   it "sets pragma '#{pragma}' to #{expected}" do
     with_db("#{DB_FILENAME}?#{pragma}=#{value}") do |db|
-      actual = db.scalar("PRAGMA #{pragma}").or_panic
-      assert actual == expected, "PRAGMA #{pragma}=#{value} reads back #{actual.inspect}"
+      db.scalar("PRAGMA #{pragma}") do |actual|
+        assert actual == expected, "PRAGMA #{pragma}=#{value} reads back #{actual.inspect}"
+      end.or_panic
     end
   end
 end
@@ -43,12 +44,12 @@ describe "Connection" do
 
         dump db, backup_db
 
-        backup_name = backup_db.scalar("select name from person").or_panic
-        backup_age = backup_db.scalar("select age from person").or_panic
-        source_name = db.scalar("select name from person").or_panic
-        source_age = db.scalar("select age from person").or_panic
-
-        assert({backup_name, backup_age} == {source_name, source_age})
+        backup_db.scalar("select name from person") do |backup_name|
+          db.scalar("select name from person") { |source_name| assert backup_name == source_name }.or_panic
+        end.or_panic
+        backup_age = backup_db.scalar("select age from person", as: Int64).or_panic
+        source_age = db.scalar("select age from person", as: Int64).or_panic
+        assert backup_age == source_age
       end
     end
   end
@@ -60,11 +61,11 @@ describe "Connection" do
         db.exec("insert into person values (\"foo\", 10)").or_panic
         dump db, in_memory_db
 
-        assert in_memory_db.scalar("select count(*) from person").or_panic == 1
+        in_memory_db.scalar("select count(*) from person") { |value| assert value == 1 }.or_panic
         in_memory_db.exec("insert into person values (\"bar\", 22)").or_panic
         dump in_memory_db, db
 
-        assert db.scalar("select count(*) from person").or_panic == 2
+        db.scalar("select count(*) from person") { |value| assert value == 2 }.or_panic
       end
     end
   end
@@ -77,7 +78,7 @@ describe "Connection" do
           100_000.times { tx.connection.exec("insert into person values (\"foo\", 10)").or_panic }
         end.or_panic
         dump db, in_memory_db
-        assert in_memory_db.scalar("select count(*) from person").or_panic == 100_000
+        in_memory_db.scalar("select count(*) from person") { |value| assert value == 100_000 }.or_panic
       end
     end
   end
@@ -89,7 +90,7 @@ describe "Connection" do
       cnn.exec("create table person (name text, age integer)").or_panic
       cnn.exec("insert into person values (\"foo\", 10)").or_panic
 
-      assert cnn.scalar("select count(*) from person").or_panic == 1
+      cnn.scalar("select count(*) from person") { |value| assert value == 1 }.or_panic
     end
   end
 
@@ -107,7 +108,7 @@ describe "Connection" do
 
   it "reports the linked library version as the server version" do
     with_cnn do |cnn|
-      assert cnn.server_version == cnn.scalar("select sqlite_version()").or_panic
+      cnn.scalar("select sqlite_version()") { |version| assert cnn.server_version == version }.or_panic
     end
   end
 
@@ -156,15 +157,16 @@ with_mem_db do |db|
     conn.exec("ROLLBACK").or_panic
     assert conn.transaction_state == TransactionState::Idle
     assert conn.exec("CREATE TABLE rejected (id); SELECT 2").is_a?(DBError)
-    assert conn.scalar("SELECT count(*) FROM sqlite_master WHERE name = 'rejected'").or_panic == 0_i64
+    assert conn.exec("SELECT 1\0; SELECT 2").is_a?(DBError)
+    conn.scalar("SELECT count(*) FROM sqlite_master WHERE name = 'rejected'") { |value| assert value == 0_i64 }.or_panic
     assert conn.exec("").is_a?(DBError)
     assert conn.exec("  -- empty").is_a?(DBError)
-    assert conn.scalar("SELECT ?", args: [] of DBValue).is_a?(DBError)
-    assert conn.scalar("SELECT ?", 1, 2).is_a?(DBError)
-    assert conn.scalar("SELECT ?", 17).or_panic == 17_i64
-    assert conn.scalar("SELECT ?", args: [] of DBValue).is_a?(DBError)
-    assert conn.scalar("SELECT ?", nil).or_panic.nil?
-    assert conn.scalar("SELECT ?", 23).or_panic == 23_i64
+    assert conn.scalar("SELECT ?", args: [] of DBValue, as: Int64).is_a?(DBError)
+    assert conn.scalar("SELECT ?", 1, 2, as: Int64).is_a?(DBError)
+    conn.scalar("SELECT ?", 17) { |value| assert value == 17_i64 }.or_panic
+    assert conn.scalar("SELECT ?", args: [] of DBValue, as: Int64).is_a?(DBError)
+    conn.scalar("SELECT ?", nil) { |value| assert value.nil? }.or_panic
+    conn.scalar("SELECT ?", 23) { |value| assert value == 23_i64 }.or_panic
     nil
   end.or_panic
 end

@@ -1,4 +1,5 @@
 # Build products
+/.ris-cache/
 *.iyimod
 /mods/
 *.exe
