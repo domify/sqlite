@@ -1,5 +1,19 @@
 # Unreleased
 
+A second engine, libturso, on the same driver classes:
+
+* `import sqlite/turso` registers the `turso:` scheme (`TursoDriver`,
+  `TursoConnection`). It links a libturso built with its C symbols renamed
+  `turso_*`, so `sqlite3:` and `turso:` connections work in one program.
+* The classes are generic over the C binding (`SQLite3ConnectionOf(L)` and so
+  on); `SQLite3Connection`, `SQLite3Driver` and the rest are aliases for the
+  libsqlite3 ones. The binding is written once, as the `sqlite_lib` macro.
+* On libturso, `regexp` is not registered (REGEXP is built in), an empty `Bytes`
+  binds through `bind_blob`, `mutexed?` is false and `dump` returns an error.
+* `SQLite3Connection::Options` is now `SQLite3Options`; `sqlite_filename(uri)`
+  is the file a URI names.
+* Requires db v0.3.1.
+
 Ported to ris's memory rules, on the redesigned db:
 
 * A connection belongs to the block and the task that opened it:

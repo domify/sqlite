@@ -126,7 +126,7 @@ DriverSpecs.run(syntax) do |specs|
 
   specs.it "raises on unsupported param types" do |db|
     expect_error(db.exec("select ?", NotSupportedType.new), DBError,
-      "Sqlite::Core::SQLite3Statement does not support Sqlite::DriverSpecsTest::NotSupportedType params")
+      "Sqlite::Core::SQLite3StatementOf(Sqlite::Core::LibSQLite3) does not support Sqlite::DriverSpecsTest::NotSupportedType params")
   end
 
   specs.it "ensures statements are closed" do |db|

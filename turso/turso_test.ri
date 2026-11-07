@@ -1,0 +1,30 @@
+# The `turso:` scheme next to `sqlite3:` in one program. Needs libturso.a on
+# IYI_LIBRARY_PATH (Ricord's bin/build-turso): `ris test turso/`.
+module turso/turso_test
+
+import std/slice::{Bytes}
+import db/db/db
+import db/db/spec::{describe, it}
+import sqlite/core::{SQLite3Connection}
+import sqlite/turso::{TursoConnection}
+
+describe "turso" do
+  it "opens both engines in one program" do
+    ::Db::Db.open("sqlite3:%3Amemory%3A") do |lite|
+      ::Db::Db.open("turso:%3Amemory%3A") do |turso|
+        assert lite.is_a?(SQLite3Connection)
+        assert turso.is_a?(TursoConnection)
+        turso.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, data BLOB)").or_panic
+        turso.exec("INSERT INTO t (name, data) VALUES (?, ?)", "a", Bytes.new(0)).or_panic
+        name = turso.scalar("SELECT name FROM t WHERE id = 1", as: String).or_panic
+        assert name == "a", "read #{name.inspect}"
+        size = turso.scalar("SELECT length(data) FROM t WHERE id = 1", as: Int64).or_panic
+        assert size == 0_i64, "empty blob length #{size.inspect}"
+        null = turso.scalar("SELECT data IS NULL FROM t WHERE id = 1", as: Int64).or_panic
+        assert null == 0_i64, "empty blob bound as NULL"
+        assert turso.scalar("SELECT 'abc' REGEXP '^a'", as: Int64).or_panic == 1_i64
+        assert lite.scalar("SELECT 'abc' REGEXP '^a'", as: Int64).or_panic == 1_i64
+      end
+    end.or_panic
+  end
+end

@@ -1,0 +1,16 @@
+# The `turso:` scheme: the same driver classes bound to libturso, whose C
+# symbols are libsqlite3's with a `turso_` prefix (`bin/build-turso` in Ricord
+# builds the static library with them renamed, so one binary can link both).
+# Only a program that imports this module links libturso.
+@[Ffi]
+module sqlite/turso
+
+import db/db/db
+import sqlite/core::{sqlite_lib, SQLite3DriverOf, SQLite3ConnectionOf}
+
+sqlite_lib(LibTurso, turso, turso_, false)
+
+pub alias TursoDriver = SQLite3DriverOf(LibTurso)
+pub alias TursoConnection = SQLite3ConnectionOf(LibTurso)
+
+::Db::Db.register_driver "turso", TursoDriver
